@@ -20,6 +20,7 @@ ticker_symbol = _fetcher.ticker_symbol
 from analysis.patterns import detect_patterns, patterns_summary_table
 from analysis.chart_plot import plot_chart_with_patterns
 from analysis.scorer import score_all_stocks, score_stock
+from analysis.signals import signal_for_term
 from analysis.timeframe import DEFAULT_TIMEFRAME, get_timeframe, timeframe_options
 from llm.advisor import generate_picks_commentaries, generate_technical_analysis
 
@@ -59,12 +60,19 @@ with st.sidebar:
 tab_scan, tab_detail = st.tabs(["🔍 Tarama", "📊 Hisse Detayı"])
 
 
-def _score_table(scores: list, score_attr: str, change_labels: tuple[str, str, str]) -> pd.DataFrame:
+def _score_table(
+    scores: list,
+    score_attr: str,
+    change_labels: tuple[str, str, str],
+    signal_term: str,
+) -> pd.DataFrame:
     rows = []
     for s in scores:
         ind = s.indicators
+        sig = signal_for_term(s.trade_signals, signal_term)
         rows.append({
             "Hisse": s.symbol,
+            "Sinyal": sig,
             "Skor": getattr(s, score_attr),
             "Fiyat (TL)": f"{ind.get('close', 0):.2f}",
             "RSI": f"{ind.get('rsi_14', 0):.1f}" if ind.get("rsi_14") else "-",
@@ -73,6 +81,49 @@ def _score_table(scores: list, score_attr: str, change_labels: tuple[str, str, s
             change_labels[2]: ind.get("price_change_6m", "-"),
         })
     return pd.DataFrame(rows)
+
+
+def _signal_color(signal: str) -> str:
+    if "AL" in signal and "SAT" not in signal:
+        return "#2e7d32"
+    if "SAT" in signal:
+        return "#c62828"
+    return "#f9a825"
+
+
+def _show_trade_signals(trade_signals: dict) -> None:
+    st.subheader("📡 Al / Sat / Tut Sinyalleri")
+    overall = trade_signals.get("overall", {})
+    cols = st.columns(4)
+    labels = [
+        ("Genel", "overall"),
+        ("Kısa Vade", "short_term"),
+        ("Orta Vade", "mid_term"),
+        ("Uzun Vade", "long_term"),
+    ]
+    for col, (title, key) in zip(cols, labels):
+        data = trade_signals.get(key, {})
+        sig = data.get("signal", "TUT")
+        with col:
+            st.markdown(
+                f"<div style='text-align:center;padding:12px;border-radius:8px;"
+                f"border:2px solid {_signal_color(sig)};background:#fafafa'>"
+                f"<div style='font-size:0.85em;color:#666'>{title}</div>"
+                f"<div style='font-size:1.4em;font-weight:bold;color:{_signal_color(sig)}'>"
+                f"{sig}</div></div>",
+                unsafe_allow_html=True,
+            )
+
+    reasons = overall.get("reasons", [])
+    if reasons:
+        st.write("**Genel sinyal gerekçeleri:**")
+        for r in reasons:
+            st.markdown(f"- {r}")
+
+    st.caption(
+        "⚠️ Sinyaller RSI, MACD, Bollinger, SMA ve momentum oylamasıyla üretilir. "
+        "Yatırım tavsiyesi değildir."
+    )
 
 
 def _indicator_metrics(ind: dict, change_labels: tuple[str, str, str]) -> None:
@@ -131,21 +182,21 @@ with tab_scan:
             with c1:
                 st.subheader("⚡ Kısa Vade")
                 st.dataframe(
-                    _score_table(results["short_term"], "short_term_score", tf.change_labels),
+                    _score_table(results["short_term"], "short_term_score", tf.change_labels, "short_term"),
                     use_container_width=True,
                     hide_index=True,
                 )
             with c2:
                 st.subheader("📅 Orta Vade")
                 st.dataframe(
-                    _score_table(results["mid_term"], "mid_term_score", tf.change_labels),
+                    _score_table(results["mid_term"], "mid_term_score", tf.change_labels, "mid_term"),
                     use_container_width=True,
                     hide_index=True,
                 )
             with c3:
                 st.subheader("🏔️ Uzun Vade")
                 st.dataframe(
-                    _score_table(results["long_term"], "long_term_score", tf.change_labels),
+                    _score_table(results["long_term"], "long_term_score", tf.change_labels, "long_term"),
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -205,6 +256,8 @@ with tab_detail:
                     m2.metric("Orta Vade", f"{result.mid_term_score}/100")
                     m3.metric("Uzun Vade", f"{result.long_term_score}/100")
                     m4.metric("Fiyat", f"{result.indicators['close']:.2f} TL")
+
+                    _show_trade_signals(result.trade_signals)
 
                     st.subheader("Teknik Göstergeler")
                     _indicator_metrics(result.indicators, tf.change_labels)

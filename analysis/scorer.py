@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from analysis.timeframe import DEFAULT_TIMEFRAME
 from analysis.indicators import calculate_indicators
 from analysis.patterns import detect_patterns
+from analysis.signals import build_trade_signals
 from data.fetcher import ticker_symbol
 
 # --- Kısa vade ağırlıkları (toplam 100) ---
@@ -47,6 +48,7 @@ class StockScore:
     short_breakdown: dict = field(default_factory=dict)
     mid_breakdown: dict = field(default_factory=dict)
     long_breakdown: dict = field(default_factory=dict)
+    trade_signals: dict = field(default_factory=dict)
 
     @property
     def signals(self) -> dict:
@@ -91,6 +93,8 @@ def score_from_indicators(
         _long_term_factors(indicators), LONG_TERM_WEIGHTS
     )
 
+    trade_signals = build_trade_signals(indicators, short_score, mid_score, long_score)
+
     return StockScore(
         ticker=ticker,
         symbol=ticker_symbol(ticker),
@@ -102,6 +106,7 @@ def score_from_indicators(
         short_breakdown=short_bd,
         mid_breakdown=mid_bd,
         long_breakdown=long_bd,
+        trade_signals=trade_signals,
     )
 
 
