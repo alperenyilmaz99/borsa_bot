@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -27,6 +28,93 @@ REGION_COLORS = {
     "trend": "#66bb6a",
 }
 
+_MAX_LABEL_LEN = 28
+
+
+@dataclass
+class _LabelSpec:
+    anchor_x: float
+    anchor_y: float
+    text: str
+    color: str
+    priority: int = 5
+
+
+@dataclass
+class _LabelPlacer:
+    """Etiketleri sağ sütunda dikey olarak yerleştirir; çakışmayı önler."""
+
+    ax: Any
+    plot_len: int
+    specs: list[_LabelSpec] = field(default_factory=list)
+
+    def add(
+        self,
+        anchor_x: float,
+        anchor_y: float,
+        text: str,
+        color: str,
+        *,
+        priority: int = 5,
+    ) -> None:
+        text = _shorten(text)
+        if not text:
+            return
+        if any(s.text == text for s in self.specs):
+            return
+        self.specs.append(
+            _LabelSpec(anchor_x, anchor_y, text, color, priority)
+        )
+
+    def render(self) -> None:
+        if not self.specs:
+            return
+
+        ymin, ymax = self.ax.get_ylim()
+        y_range = ymax - ymin
+        min_sep = y_range * 0.062
+        margin = y_range * 0.02
+
+        specs = sorted(self.specs, key=lambda s: (s.priority, -s.anchor_y))
+
+        placed_y: list[float] = []
+        label_x = self.plot_len + max(2, self.plot_len * 0.04)
+
+        for spec in specs:
+            target_y = _clamp(spec.anchor_y, ymin + margin, ymax - margin)
+            target_y = _resolve_y_collision(target_y, placed_y, min_sep, ymin + margin, ymax - margin)
+            placed_y.append(target_y)
+
+            self.ax.annotate(
+                spec.text,
+                xy=(spec.anchor_x, spec.anchor_y),
+                xytext=(label_x, target_y),
+                fontsize=6.5,
+                color=spec.color,
+                fontweight="bold",
+                ha="left",
+                va="center",
+                arrowprops=dict(
+                    arrowstyle="-",
+                    color=spec.color,
+                    lw=0.7,
+                    alpha=0.65,
+                    shrinkA=2,
+                    shrinkB=2,
+                ),
+                bbox=dict(
+                    boxstyle="round,pad=0.2",
+                    facecolor="white",
+                    edgecolor=spec.color,
+                    alpha=0.95,
+                    linewidth=0.8,
+                ),
+                clip_on=False,
+                zorder=10,
+            )
+
+        self.ax.set_xlim(-1, label_x + self.plot_len * 0.22)
+
 
 def plot_chart_with_patterns(
     df: pd.DataFrame,
@@ -50,7 +138,7 @@ def plot_chart_with_patterns(
     x_offset = start
 
     fig, (ax_price, ax_vol) = plt.subplots(
-        2, 1, figsize=(13, 7), sharex=True,
+        2, 1, figsize=(14, 7), sharex=True,
         gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
     )
 
@@ -66,9 +154,9 @@ def plot_chart_with_patterns(
 
     _draw_candlesticks(ax_price, data)
 
-    label_positions: list[tuple[float, float]] = []
+    placer = _LabelPlacer(ax_price, plot_len)
     for pat in patterns:
-        _draw_pattern_regions(ax_price, pat, x_offset, plot_len, label_positions)
+        _draw_pattern_regions(ax_price, pat, x_offset, plot_len, placer)
 
     ax_price.set_title(
         f"{symbol} — {timeframe_label} · Formasyonlu Grafik" if symbol
@@ -78,6 +166,8 @@ def plot_chart_with_patterns(
     ax_price.set_ylabel("Fiyat (TL)")
     ax_price.grid(True, alpha=0.25)
     ax_price.legend(loc="upper left", fontsize=8, ncol=4)
+
+    placer.render()
 
     if "Volume" in data.columns:
         colors = [
@@ -90,12 +180,57 @@ def plot_chart_with_patterns(
     ax_vol.set_xlabel("Zaman (sondan geriye)")
     _set_date_ticks(ax_vol, data.index, plot_len)
 
-    fig.subplots_adjust(hspace=0.08)
+    fig.subplots_adjust(hspace=0.08, right=0.98)
     return fig
 
 
+def _shorten(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _MAX_LABEL_LEN:
+        return text
+    return text[: _MAX_LABEL_LEN - 1] + "…"
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _resolve_y_collision(
+    y: float,
+    placed: list[float],
+    min_sep: float,
+    ymin: float,
+    ymax: float,
+) -> float:
+    if not placed:
+        return y
+
+    for _ in range(40):
+        collision = False
+        for py in placed:
+            if abs(y - py) < min_sep:
+                collision = True
+                y = py + min_sep
+                break
+        if not collision:
+            break
+
+    if y > ymax:
+        y = placed[-1] - min_sep if placed else ymax
+        for _ in range(40):
+            collision = False
+            for py in placed:
+                if abs(y - py) < min_sep:
+                    collision = True
+                    y = py - min_sep
+                    break
+            if not collision:
+                break
+
+    return _clamp(y, ymin, ymax)
+
+
 def _draw_candlesticks(ax, data: pd.DataFrame) -> None:
-    """Basit mum çubukları (gövde + fitil)."""
     for i, row in enumerate(data.itertuples()):
         o, h, l, c = row.Open, row.High, row.Low, row.Close
         color = "#26a69a" if c >= o else "#ef5350"
@@ -121,13 +256,18 @@ def _draw_pattern_regions(
     pattern: dict[str, Any],
     x_offset: int,
     plot_len: int,
-    label_positions: list[tuple[float, float]],
+    placer: _LabelPlacer,
 ) -> None:
     confidence = pattern.get("confidence", "deneysel")
     edge_color = CONFIDENCE_COLORS.get(confidence, "#ef6c00")
     name = pattern.get("name", "Formasyon")
+    priority = 1 if confidence == "kesin" else 3
 
-    for region in pattern.get("regions", []):
+    anchor_x: float | None = None
+    anchor_y: float | None = None
+    regions = pattern.get("regions", [])
+
+    for region in regions:
         kind = region.get("kind")
         color = REGION_COLORS.get(region.get("style", kind), "#ef6c00")
         alpha = 0.18 if kind in ("rect", "pole", "flag", "cup", "handle") else 0.9
@@ -140,14 +280,17 @@ def _draw_pattern_regions(
             i0 = max(0, i0 if i0 is not None else 0)
             i1 = min(plot_len - 1, i1 if i1 is not None else plot_len - 1)
             ax.axvspan(i0, i1, color=color, alpha=alpha, zorder=0)
+            mid_x = (i0 + i1) / 2
             mid_y = (region.get("price_low", 0) + region.get("price_high", 0)) / 2
-            _add_label(ax, (i0 + i1) / 2, mid_y, region.get("label", ""), label_positions, edge_color)
+            anchor_x, anchor_y = mid_x, mid_y
 
         elif kind == "hline":
             price = region.get("price")
             if price is not None:
                 ax.axhline(price, color=color, linestyle="--", linewidth=1.0, alpha=0.7)
-                _add_label(ax, plot_len * 0.92, price, region.get("label", ""), label_positions, edge_color)
+                if anchor_x is None:
+                    anchor_x = plot_len * 0.85
+                    anchor_y = price
 
         elif kind == "line":
             pts = region.get("points", [])
@@ -159,35 +302,18 @@ def _draw_pattern_regions(
             if len(plot_pts) >= 2:
                 xs, ys = zip(*plot_pts)
                 ax.plot(xs, ys, color=color, linewidth=1.5, linestyle="--", alpha=0.85)
-                _add_label(ax, plot_pts[-1][0], plot_pts[-1][1], region.get("label", ""), label_positions, edge_color)
+                if anchor_x is None:
+                    anchor_x, anchor_y = plot_pts[-1]
 
         elif kind == "marker":
             px = _to_plot_idx(region["idx"], x_offset, plot_len)
             if px is not None:
                 price = region.get("price", 0)
-                ax.scatter([px], [price], color=edge_color, s=80, zorder=5, marker="v")
-                _add_label(ax, px, price, name, label_positions, edge_color)
+                ax.scatter([px], [price], color=edge_color, s=60, zorder=5, marker="v", alpha=0.9)
+                anchor_x, anchor_y = px, price
 
-
-def _add_label(
-    ax,
-    x: float,
-    y: float,
-    text: str,
-    positions: list[tuple[float, float]],
-    color: str,
-) -> None:
-    if not text:
-        return
-    for px, py in positions:
-        if abs(px - x) < 8 and abs(py - y) < (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.03:
-            y += (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.02
-    ax.annotate(
-        text, (x, y), fontsize=7, color=color, fontweight="bold",
-        ha="center", va="bottom",
-        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor=color, alpha=0.85),
-    )
-    positions.append((x, y))
+    if anchor_x is not None and anchor_y is not None:
+        placer.add(anchor_x, anchor_y, name, edge_color, priority=priority)
 
 
 def _set_date_ticks(ax, index: pd.Index, plot_len: int) -> None:
