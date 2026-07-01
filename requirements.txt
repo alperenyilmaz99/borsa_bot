@@ -1,0 +1,11 @@
+streamlit
+yfinance
+pandas
+numpy
+scipy
+TA-Lib
+langchain
+langchain-anthropic
+python-dotenv
+ta
+matplotlib
